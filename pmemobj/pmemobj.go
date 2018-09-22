@@ -34,17 +34,81 @@ package pmemobj
 
 // #cgo LDFLAGS: -lpmemobj
 // #include <libpmemobj.h>
+// #include <stdlib.h>
+//
+// struct data {
+// size_t size;
+// void* val;
+// };
+//
+// int elem_constructor(PMEMobjpool *pop, void *ptr, void *arg) {
+//	struct data* d = (struct data*)arg;
+//  memcpy(ptr, d->val, d->size);
+//	pmemobj_persist(pop, ptr, d->size);
+//  return 0;
+//  }
+//
 import "C"
 
+import (
+	"fmt"
+	"unsafe"
+)
+
+// Pool is a handler to pmemobj pool
 type Pool struct {
 	pop *C.struct_pmemobjpool
 }
 
+// Oid is a handler to object allocated on pmemobj pool
+type Oid struct {
+	oid C.struct_pmemoid
+}
+
+// Create creates new pmemobj pool
 func Create(path, layout string, size uint64, mode uint16) (Pool, error) {
 	pop, err := C.pmemobj_create(C.CString(path), C.CString(layout), C.size_t(size), C.uint(mode))
 	return Pool{pop}, err
 }
 
+// Open opens existing pmemobj pool
+func Open(path, layout string) (Pool, error) {
+	pop, err := C.pmemobj_open(C.CString(path), C.CString(layout))
+	return Pool{pop}, err
+}
+
+// Close closes the pmemobj pool
 func (p *Pool) Close() {
 	C.pmemobj_close(p.pop)
+}
+
+// Alloc allocates new value on pmemobj pool
+func (p *Pool) Alloc(value int) (Oid, error) {
+	var oid C.struct_pmemoid
+
+	data := C.struct_data{C.size_t(unsafe.Sizeof(value)), unsafe.Pointer(&value)}
+	cptr := C.malloc(C.size_t(unsafe.Sizeof(data)))
+	if cptr == nil {
+		return Oid{}, fmt.Errorf("C.malloc fail")
+	}
+	defer C.free(cptr)
+
+	*(*C.struct_data)(cptr) = data
+
+	i, err := C.pmemobj_alloc(p.pop, &oid, C.size_t(data.size), 1, C.pmemobj_constr(C.elem_constructor), cptr)
+	if i != 0 {
+		return Oid{}, err
+	}
+
+	return Oid{oid}, nil
+}
+
+// First returns first object from the pool
+func (p *Pool) First() (int, error) {
+	oid := C.pmemobj_first(p.pop)
+	if oid.off == 0 {
+		return 0, fmt.Errorf("oid is null")
+	}
+	ptr := C.pmemobj_direct(oid)
+	return *(*int)(ptr), nil
 }
